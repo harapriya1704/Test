@@ -13,10 +13,10 @@ OUTPUT_EXCEL = os.path.join(BASE_DIR, "output", "glassbox_results.xlsx")
 
 # Increased wait times for Selenium actions
 WAIT_TIMES = {
-    "PAGE_LOAD": 40,
-    "GIA_LOAD": 25,
-    "SHORT": 10,
-    "COOKIE_EXTRACTION": 20
+    "PAGE_LOAD": 40,      # Increased from 20
+    "GIA_LOAD": 25,       # Increased from 8
+    "SHORT": 10,          # Increased from 3
+    "COOKIE_EXTRACTION": 20  # New wait time
 }
 
 # Authentication URL for Glassbox login

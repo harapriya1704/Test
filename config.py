@@ -1,3 +1,4 @@
+# config.py
 import os
 
 # Toggle for test mode
@@ -10,11 +11,12 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 EXCEL_PATH = os.path.join(BASE_DIR, "sample_data.xlsx")  
 OUTPUT_EXCEL = os.path.join(BASE_DIR, "output", "glassbox_results.xlsx")
 
-# Wait times for Selenium actions
+# Increased wait times for Selenium actions
 WAIT_TIMES = {
-    "PAGE_LOAD": 20,
-    "GIA_LOAD": 8,
-    "SHORT": 3
+    "PAGE_LOAD": 40,
+    "GIA_LOAD": 25,
+    "SHORT": 10,
+    "COOKIE_EXTRACTION": 20
 }
 
 # Authentication URL for Glassbox login

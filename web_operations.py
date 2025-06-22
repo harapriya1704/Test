@@ -86,50 +86,37 @@ def close_gia_insights(driver):
             print("❌ Failed to close GIA Insights popover:", str(e))
             return False
 
-def extract_cookie_ids(driver):
+def extract_cookie_values(driver):
     try:
-        print("Attempting to extract cookie IDs...")
-        
-        # Switch back to default content in case we were in an iframe
+        print("Attempting to extract cookie values...")
         driver.switch_to.default_content()
         
-        # Try to find the cookie table without clicking anything first
-        try:
-            print("Looking for cookie table without clicking...")
-            WebDriverWait(driver, WAIT_TIMES["COOKIE_EXTRACTION"]).until(
-                EC.presence_of_element_located((By.XPATH, "//span[contains(@title, 'DellCEMSessionCookie')]"))
-            )
-        except TimeoutException:
-            print("Cookie table not found, trying to reveal it...")
+        # Wait for cookie table to appear
+        WebDriverWait(driver, WAIT_TIMES["COOKIE_EXTRACTION"]).until(
+            EC.presence_of_element_located((By.XPATH, "//table[contains(@class, 'cookies-table')]"))
+        )
+        
+        # Extract all cookies dynamically
+        cookies = {}
+        rows = driver.find_elements(By.XPATH, "//table[contains(@class, 'cookies-table')]//tr")
+        
+        for row in rows:
             try:
-                cross_icon = WebDriverWait(driver, WAIT_TIMES["COOKIE_EXTRACTION"]).until(
-                    EC.element_to_be_clickable((By.XPATH, "//button[contains(@class, 'close') or contains(@aria-label, 'Close')]"))
-                )
-                cross_icon.click()
-                print("Clicked icon to reveal cookie table")
-                time.sleep(3)
-            except Exception:
-                print("Could not find reveal icon, proceeding anyway")
-
-        print("Extracting cookie values...")
-        cem_span = WebDriverWait(driver, WAIT_TIMES["COOKIE_EXTRACTION"]).until(
-            EC.presence_of_element_located((By.XPATH, "//span[contains(@title, 'DellCEMSessionCookie')]"))
-        )
-        mcmid_span = WebDriverWait(driver, WAIT_TIMES["COOKIE_EXTRACTION"]).until(
-            EC.presence_of_element_located((By.XPATH, "//span[contains(@title, 'MCMID')]"))
-        )
-
-        cem_id = cem_span.get_attribute("title")
-        mcmid = mcmid_span.get_attribute("title")
-
-        print(f"✅ Extracted CEM ID: {cem_id}")
-        print(f"✅ Extracted MCMID: {mcmid}")
-
-        return cem_id, mcmid
+                cells = row.find_elements(By.TAG_NAME, "td")
+                if len(cells) >= 2:
+                    name = cells[0].text.strip()
+                    value = cells[1].text.strip()
+                    if name and value:
+                        cookies[name] = value
+            except StaleElementReferenceException:
+                continue
+        
+        print(f"✅ Extracted {len(cookies)} cookie values")
+        return cookies
 
     except Exception as e:
         print("❌ Cookie extraction failed:", str(e))
-        return "", ""
+        return {}
 
 def process_glassbox_links(data):
     options = webdriver.EdgeOptions()
@@ -170,18 +157,18 @@ def process_glassbox_links(data):
             entry["gia_insights"] = extract_gia_insights(driver)
             close_gia_insights(driver)
             
-            # Switch back to default content before cookie extraction
-            driver.switch_to.default_content()
+            # Extract all cookies dynamically
+            cookies = extract_cookie_values(driver)
             
-            cem_id, mcmid = extract_cookie_ids(driver)
-            entry["cem_id"] = cem_id
-            entry["mcmid"] = mcmid
+            # Store specific cookies we need
+            entry["Global_DellCEMSessionCookie_CSH"] = cookies.get("Global_DellCEMSessionCookie_CSH", "")
+            entry["Global_MCMID_CSH"] = cookies.get("Global_MCMID_CSH", "")
 
         except Exception as e:
             print(f"⚠️ Error processing {entry['order_number']}: {e}")
             entry["gia_insights"] = ""
-            entry["cem_id"] = ""
-            entry["mcmid"] = ""
+            entry["Global_DellCEMSessionCookie_CSH"] = ""
+            entry["Global_MCMID_CSH"] = ""
         finally:
             results.append(entry)
             print(f"Completed processing {entry['order_number']}")

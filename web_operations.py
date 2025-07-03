@@ -1,62 +1,65 @@
-# web_operations.py
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.edge.service import Service
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from selenium.common.exceptions import TimeoutException, StaleElementReferenceException, NoSuchElementException
+from selenium.common.exceptions import TimeoutException, StaleElementReferenceException
 from webdriver_manager.microsoft import EdgeChromiumDriverManager
 from config import WAIT_TIMES, AUTH_URL
+from config import OUTPUT_EXCEL
+from file_operations import append_session_to_excel, update_last_row_with_order_details
+from selenium.webdriver.edge.options import Options
+from api_operations import fetch_filtered_order_details
+from utils import convert_excel_date
+import subprocess
 import time
+
+def create_silent_edge_driver():
+    options = Options()
+    options.add_argument("--log-level=3")
+    options.set_capability("ms:loggingPrefs", {"browser": "OFF", "performance": "OFF"})
+    service = Service(EdgeChromiumDriverManager().install())
+    service.creationflags = subprocess.CREATE_NO_WINDOW
+    driver = webdriver.Edge(service=service, options=options)
+    return driver
+
+def wait_for_authentication(driver, timeout=50):
+    try:
+        print("⏳ Waiting for authentication to complete...")
+        WebDriverWait(driver, timeout).until(
+            EC.presence_of_element_located((By.XPATH, "//div[contains(text(), 'Recorded Sessions')]"))
+        )
+        print("✅ Authentication complete.")
+    except TimeoutException:
+        print("❌ Authentication timeout. Please check if login was successful.")
 
 def extract_gia_insights(driver):
     try:
-        print("Waiting for page to fully load...")
         WebDriverWait(driver, WAIT_TIMES["PAGE_LOAD"]).until(
             EC.presence_of_element_located((By.TAG_NAME, "body"))
         )
-
-        # Check for iframes
-        iframes = driver.find_elements(By.TAG_NAME, "iframe")
-        if iframes:
-            print(f"Found {len(iframes)} iframes, switching to first iframe")
-            driver.switch_to.frame(iframes[0])
-
-        print("Clicking GIA Insights button...")
-        gia_button = WebDriverWait(driver, WAIT_TIMES["GIA_LOAD"]).until(
+        WebDriverWait(driver, WAIT_TIMES["SHORT"]).until(
             EC.element_to_be_clickable((By.XPATH, "//button[contains(., 'GIA Insights')]"))
-        )
-        driver.execute_script("arguments[0].click();", gia_button)
-        print("GIA Insights button clicked")
-
-        print("Waiting for insights container...")
-        insights_container = WebDriverWait(driver, WAIT_TIMES["GIA_LOAD"]).until(
+        ).click()
+        insights_container = WebDriverWait(driver, WAIT_TIMES["GIA_LOAD"] + 10).until(
             EC.presence_of_element_located((By.XPATH, "//div[contains(@class, 'insights-body')]"))
         )
-
         previous_length = 0
         stable_count = 0
-        max_wait = WAIT_TIMES["GIA_LOAD"] * 2
+        max_wait = 30
         start_time = time.time()
-
         while time.time() - start_time < max_wait:
             current_text = driver.execute_script("return arguments[0].innerText;", insights_container)
             current_length = len(current_text)
-
             if current_length == previous_length:
                 stable_count += 1
             else:
                 stable_count = 0
                 previous_length = current_length
-
-            if stable_count >= 3:
+            if stable_count >= 5:
                 break
-
             time.sleep(1)
-
-        print(f"Extracted GIA Insights ({len(current_text)} characters)")
         return current_text
-
     except Exception as e:
         print("GIA Insights extraction failed:", str(e))
         return ""
@@ -64,166 +67,274 @@ def extract_gia_insights(driver):
 def close_gia_insights(driver):
     print("Attempting to close GIA Insights popover...")
     try:
-        # Try closing using the close button
-        close_btn = WebDriverWait(driver, WAIT_TIMES["SHORT"]).until(
-            EC.element_to_be_clickable((By.XPATH, "//button[@aria-label='Close']"))
+        print("Trying fallback: clicking GIA Insights button again...")
+        toggle_btn = WebDriverWait(driver, 5).until(
+            EC.element_to_be_clickable((By.XPATH, "//button[contains(., 'GIA Insights')]"))
         )
-        close_btn.click()
-        print("✅ Closed GIA Insights popover using close button")
-        time.sleep(2)
-        return True
-    except Exception:
         try:
-            print("Trying fallback: clicking GIA Insights button...")
-            toggle_btn = WebDriverWait(driver, WAIT_TIMES["SHORT"]).until(
-                EC.element_to_be_clickable((By.XPATH, "//button[contains(., 'GIA Insights')]"))
-            )
             toggle_btn.click()
-            print("✅ Closed GIA Insights popover by toggling button")
-            time.sleep(2)
-            return True
-        except Exception as e:
-            print("❌ Failed to close GIA Insights popover:", str(e))
-            return False
-
-def click_cross_button(driver):
-    """Click the cross button shown in the image to reveal cookie information"""
-    print("Clicking cross button to reveal cookie details...")
-    try:
-        # Try multiple selectors to find the cross button
-        cross_selectors = [
-            "//button[contains(@class, 'close') and contains(@aria-label, 'Close')]",
-            "//button[contains(@class, 'close')]",
-            "//button[contains(., '×')]",
-            "//button[@aria-label='Close']"
-        ]
-        
-        for selector in cross_selectors:
-            try:
-                cross_btn = WebDriverWait(driver, WAIT_TIMES["SHORT"]).until(
-                    EC.element_to_be_clickable((By.XPATH, selector))
-                )
-                print(f"Found cross button with selector: {selector}")
-                cross_btn.click()
-                print("✅ Cross button clicked")
-                time.sleep(1)
-                return True
-            except:
-                continue
-        print("❌ Could not find cross button with any selector")
-        return False
+        except Exception:
+            driver.execute_script("arguments[0].click();", toggle_btn)
+        print("✅ Closed GIA Insights popover by toggling the button.")
+        time.sleep(2)
+        return
     except Exception as e:
-        print(f"❌ Error clicking cross button: {str(e)}")
-        return False
+        print("❌ Fallback toggle failed — GIA Insights popover could not be closed:", str(e))
 
-
-def extract_specific_cookies(driver):
-    """Extract specific cookie values after revealing them"""
+def click_expert_view_icon(driver):
     try:
-        print("Extracting specific cookie values...")
-        driver.switch_to.default_content()
-        
-        # Wait for the cookie table to appear
-        WebDriverWait(driver, WAIT_TIMES["COOKIE_EXTRACTION"]).until(
-            EC.presence_of_element_located((By.XPATH, "//table[contains(@class, 'cookies-table')]"))
+        expert_view_xpath = "//button[.//gb-icon[@aria-label='expert-view']]"
+        elements = driver.find_elements(By.XPATH, expert_view_xpath)
+        print(f"🔍 Found {len(elements)} Expert View button(s).")
+        if not elements:
+            print("❌ No Expert View button found.")
+            return
+        expert_view_btn = WebDriverWait(driver, 10).until(
+            EC.element_to_be_clickable((By.XPATH, expert_view_xpath))
         )
-        
-        # Extract specific cookies
-        cookies = {}
-        
-        # Global_DellCEMSessionCookie_CSH
-        try:
-            cem_cell = WebDriverWait(driver, WAIT_TIMES["SHORT"]).until(
-                EC.presence_of_element_located((By.XPATH, "//td[contains(text(), 'Global_DellCEMSessionCookie_CSH')]/following-sibling::td"))
-            )
-            cem_value = cem_cell.text.strip()
-            cookies["Global_DellCEMSessionCookie_CSH"] = cem_value
-            print(f"✅ Extracted Global_DellCEMSessionCookie_CSH: {cem_value[:30]}...")
-        except Exception as e:
-            print(f"❌ Failed to extract Global_DellCEMSessionCookie_CSH: {str(e)}")
-            cookies["Global_DellCEMSessionCookie_CSH"] = ""
-        
-        # Global_MCMID_CSH
-        try:
-            mcmid_cell = WebDriverWait(driver, WAIT_TIMES["SHORT"]).until(
-                EC.presence_of_element_located((By.XPATH, "//td[contains(text(), 'Global_MCMID_CSH')]/following-sibling::td"))
-            )
-            mcmid_value = mcmid_cell.text.strip()
-            cookies["Global_MCMID_CSH"] = mcmid_value
-            print(f"✅ Extracted Global_MCMID_CSH: {mcmid_value[:30]}...")
-        except Exception as e:
-            print(f"❌ Failed to extract Global_MCMID_CSH: {str(e)}")
-            cookies["Global_MCMID_CSH"] = ""
-        
-        return cookies
+        driver.execute_script("arguments[0].scrollIntoView(true);", expert_view_btn)
+        driver.execute_script("arguments[0].click();", expert_view_btn)
+        print("✅ Clicked the Expert View icon.")
+        time.sleep(10)
+    except Exception as e:
+        print("❌ Failed to click the Expert View icon:", str(e))
+
+def extract_expert_view_sessions(driver):
+    try:
+        print("⏳ Extracting Expert View session entries...")
+        time.sleep(2)
+
+        session_blocks = driver.find_elements(By.XPATH, "//ul[@id='cls_tree_pages']/li")
+
+        extracted_data = []
+
+        for block in session_blocks:
+            try:
+                full_text = block.text.strip()
+
+                try:
+                    url = block.find_element(By.XPATH, ".//a").get_attribute("href")
+                except:
+                    url = ""
+
+                lines = full_text.split("\n")
+                title = lines[0] if lines else ""
+                duration = ""
+                events = ""
+
+                for line in lines:
+                    if ":" in line and len(line.strip()) <= 8:
+                        duration = line.strip()
+                    elif "event" in line.lower():
+                        events = line.strip()
+
+                extracted_data.append({
+                    "title": title,
+                    "url": url,
+                    "duration": duration,
+                    "events": events
+                })
+
+            except Exception as inner_e:
+                print("⚠️ Skipped a session entry due to missing data:", str(inner_e))
+
+        print(f"✅ Extracted {len(extracted_data)} session entries from Expert View.")
+        return extracted_data
 
     except Exception as e:
-        print(f"❌ Cookie extraction failed: {str(e)}")
-        return {
-            "Global_DellCEMSessionCookie_CSH": "",
-            "Global_MCMID_CSH": ""
-        }
+        print("❌ Failed to extract Expert View sessions:", str(e))
+        return []
+
+
+def click_server_view_icon(driver):
+    try:
+        print("🔁 Switching to Server View...")
+        server_btn = WebDriverWait(driver, 10).until(
+            EC.element_to_be_clickable((By.ID, "serverSideBtn"))
+        )
+        driver.execute_script("arguments[0].scrollIntoView(true);", server_btn)
+        driver.execute_script("arguments[0].click();", server_btn)
+        print("✅ Clicked the Server View button.")
+        time.sleep(5)
+
+        # 🔍 Click the "Errors Only" button
+        print("🔘 Clicking 'Errors Only' filter button...")
+        errors_only_btn = WebDriverWait(driver, 4).until(
+            EC.element_to_be_clickable((By.XPATH, "//div[contains(@class, 'filterBtn') and contains(@class, 'typeErrors')]"))
+        )
+        driver.execute_script("arguments[0].scrollIntoView(true);", errors_only_btn)
+        driver.execute_script("arguments[0].click();", errors_only_btn)
+        print("✅ Clicked the 'Errors Only' button.")
+        time.sleep(5)
+
+    except Exception as e:
+        print("❌ Failed to click the Server View or Errors Only button:", str(e))
+
+
+
+def extract_server_view_sessions(driver):
+    try:
+        print("⏳ Extracting Server View session entries...")
+        WebDriverWait(driver, 15).until(
+            EC.presence_of_all_elements_located((By.CLASS_NAME, "hit_line"))
+        )
+        time.sleep(2)
+
+        rows = driver.find_elements(By.CSS_SELECTOR, "div.hit_line.data_line")
+        extracted_data = []
+
+        for i, row in enumerate(rows):
+            try:
+                if not row.is_displayed():
+                    continue  
+
+                cells = row.find_elements(By.CLASS_NAME, "data_line_cell")
+
+                if len(cells) < 4:
+                    continue  
+
+                time_val = cells[0].find_element(By.TAG_NAME, "span").text.strip()
+
+                url = cells[1].get_attribute("title").strip()
+
+                status = cells[2].find_element(By.TAG_NAME, "span").text.strip()
+                total_time = cells[3].find_element(By.TAG_NAME, "span").text.strip()
+
+                if not status and not total_time:
+                    continue  
+
+                extracted_data.append({
+                    "time": time_val,
+                    "url": url,
+                    "status": status,
+                    "total_time_ms": total_time
+                })
+
+            except Exception:
+                continue 
+
+        if not extracted_data:
+            print("ℹ️ No error sessions found after filtering.")
+            return "No error sessions found."
+
+        print(f"✅ Extracted {len(extracted_data)} server session entries.")
+        return extracted_data
+
+    except Exception as e:
+        print("❌ Failed to extract Server View sessions:", str(e))
+        return "No error sessions found."
+
+
+
+
+def click_topbar_cross_button(driver):
+    try:
+        cross_btn_xpath = "//gb-icon[@class='right-panel-icon core-clickable-state ng-scope gbi gbi-close-xs' and @aria-label='close-xs']"
+        cross_btn = WebDriverWait(driver, 5).until(
+            EC.presence_of_element_located((By.XPATH, cross_btn_xpath))
+        )
+        driver.execute_script("arguments[0].click();", cross_btn)
+        print("✅ Clicked the top-bar cross button next to the settings icon.")
+        time.sleep(3)
+    except Exception as e:
+        print("❌ Failed to click the top-bar cross button:", str(e))
+
+def extract_cookie_values(driver):
+    max_attempts = 3
+    for attempt in range(max_attempts):
+        try:
+            print(f"🔄 Attempt {attempt + 1} to extract cookie values...")
+            WebDriverWait(driver, 15).until(
+                EC.presence_of_element_located((By.XPATH, "//table"))
+            )
+            time.sleep(2)
+            driver.execute_script("""
+                const tableContainer = document.querySelector('.table-container, .gb-table-container, .scrollable-table');
+                if (tableContainer) {
+                    tableContainer.scrollLeft = tableContainer.scrollWidth;
+                }
+            """)
+            time.sleep(2)
+            dell_cookie_xpath = "(//td[contains(@class, 'Global_DellCEMSessionCookie_CSH')]//span)[1]"
+            mcmid_cookie_xpath = "(//td[contains(@class, 'Global_MCMID_CSH')]//span)[1]"
+            dell_cookie_element = WebDriverWait(driver, 10).until(
+                EC.visibility_of_element_located((By.XPATH, dell_cookie_xpath))
+            )
+            mcmid_cookie_element = WebDriverWait(driver, 10).until(
+                EC.visibility_of_element_located((By.XPATH, mcmid_cookie_xpath))
+            )
+            dell_cookie = dell_cookie_element.text.strip()
+            mcmid_cookie = mcmid_cookie_element.text.strip()
+            return dell_cookie, mcmid_cookie
+        except TimeoutException as e:
+            print(f"⚠️ Timeout on attempt {attempt + 1}: {str(e)}")
+            time.sleep(2)
+        except Exception as e:
+            print(f"❌ Unexpected error on attempt {attempt + 1}: {str(e)}")
+            break
+    print("❌ All attempts to extract cookie values failed.")
+    return "", ""
+
+
+
 
 def process_glassbox_links(data):
     options = webdriver.EdgeOptions()
     options.add_argument("--start-maximized")
-    options.add_argument("--disable-infobars")
-    options.add_argument("--disable-extensions")
-    options.add_experimental_option('excludeSwitches', ['enable-logging'])
-    
-    driver = webdriver.Edge(service=Service(EdgeChromiumDriverManager().install()), options=options)
-    results = []
-
-    print("Loading authentication URL...")
+    driver = create_silent_edge_driver()
     driver.get(AUTH_URL)
-    input("Please complete fingerprint authentication and press Enter to continue...")
-
-    # Create main window handle reference
-    main_window = driver.current_window_handle
+    wait_for_authentication(driver)
 
     for index, entry in enumerate(data):
         try:
-            print(f"\nProcessing entry {index+1}/{len(data)}: {entry['order_number']}")
-            
-            # Open new tab
             driver.execute_script("window.open('about:blank', '_blank');")
-            WebDriverWait(driver, WAIT_TIMES["SHORT"]).until(lambda d: len(d.window_handles) > 1)
+            WebDriverWait(driver, 5).until(lambda d: len(d.window_handles) > index + 1)
             driver.switch_to.window(driver.window_handles[-1])
-            
-            print(f"Loading Glassbox link: {entry['glassbox_link']}")
             driver.get(entry["glassbox_link"])
-            
-            # Wait for page to load
-            time.sleep(WAIT_TIMES["PAGE_LOAD"] // 2)
-            WebDriverWait(driver, WAIT_TIMES["PAGE_LOAD"]).until(
-                EC.presence_of_element_located((By.TAG_NAME, "body"))
-            )
+            time.sleep(35)
 
-            # Process the page
             entry["gia_insights"] = extract_gia_insights(driver)
             close_gia_insights(driver)
-            
-            # Extract all cookies dynamically
-            cookies = extract_cookie_values(driver)
-            
-            # Store specific cookies we need
-            entry["Global_DellCEMSessionCookie_CSH"] = cookies.get("Global_DellCEMSessionCookie_CSH", "")
-            entry["Global_MCMID_CSH"] = cookies.get("Global_MCMID_CSH", "")
+
+            click_expert_view_icon(driver)
+            expert_view_sessions = extract_expert_view_sessions(driver)
+            entry["Client-Sessions"] = "\n\n".join([
+                f"Title: {s['title']}\nURL: {s['url']}\nDuration: {s['duration']}\nEvents: {s['events']}"
+                for s in expert_view_sessions
+            ]) if isinstance(expert_view_sessions, list) else expert_view_sessions
+
+            click_server_view_icon(driver)
+            server_view_sessions = extract_server_view_sessions(driver)
+            if isinstance(server_view_sessions, str):
+                entry["Server-Sessions"] = server_view_sessions  # e.g., "No error sessions found."
+            else:
+                entry["Server-Sessions"] = "\n\n".join([
+                    f"Time: {s['time']}\nURL: {s['url']}\nStatus: {s['status']}\nTotal Time (ms): {s['total_time_ms']}"
+                    for s in server_view_sessions
+                ])
+
+            click_topbar_cross_button(driver)
+            dell_cookie, mcmid_cookie = extract_cookie_values(driver)
+            entry["Global_DellCEMSessionCookie_CSH"] = dell_cookie
+            entry["Global_MCMID_CSH"] = mcmid_cookie
+            # ✅ Write session data to Excel
+            append_session_to_excel(entry, OUTPUT_EXCEL)
+
+            # ✅ Fetch API data only after writing session
+            order_number = entry.get("order_number")
+            excel_date = convert_excel_date(entry.get("date"))
+            entry["order_details"] = fetch_filtered_order_details(order_number, excel_date)
+
+            update_last_row_with_order_details(entry["order_details"], OUTPUT_EXCEL)
 
         except Exception as e:
-            print(f"⚠️ Error processing {entry['order_number']}: {e}")
+            print(f"Error processing link: {e}")
             entry["gia_insights"] = ""
-            entry["Global_DellCEMSessionCookie_CSH"] = ""
-            entry["Global_MCMID_CSH"] = ""
-        finally:
-            results.append(entry)
-            print(f"Completed processing {entry['order_number']}")
-            
-            # Close current tab and switch back to main window
-            if len(driver.window_handles) > 1:
-                driver.close()
-            driver.switch_to.window(main_window)
-            time.sleep(2)  # Pause between sessions
 
     driver.quit()
-    return results
+    return data
+
+
+
+
+

@@ -5,10 +5,8 @@ def extract_glassbox_data(file_path):
     wb = load_workbook(file_path)
     ws = wb.active
 
-    # Normalize headers: strip spaces and convert to lowercase with underscores
     headers = {str(cell.value).strip().replace(" ", "_").lower(): idx for idx, cell in enumerate(ws[1])}
 
-    # Map normalized names to expected keys
     col_fiscal_week = headers.get("fiscal_week")
     col_date = headers.get("date")
     col_order_number = headers.get("order_number")
@@ -25,7 +23,6 @@ def extract_glassbox_data(file_path):
         "Sat/Dissat": col_sat_dissat
     }
 
-    # Check for missing columns
     for name, idx in required_columns.items():
         if idx is None:
             raise ValueError(f"Missing column: {name}")
